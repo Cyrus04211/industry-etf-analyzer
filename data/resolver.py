@@ -1,5 +1,5 @@
 """
-LLM/报告使用的结构化快照 — 增强版（含宏观、情绪、资金流维度）
+LLM Prompt 上下文构建 — 将原始数据整理为 LLM 可读的结构化文本
 """
 from __future__ import annotations
 
@@ -7,287 +7,228 @@ import json
 from datetime import datetime
 
 
-def build_analysis_snapshot(analysis: dict) -> dict:
+def build_single_etf_context(analysis: dict) -> str:
+    """构建单只 ETF 的完整分析上下文，供 LLM 深度分析使用"""
     etf = analysis.get("etf", {})
     industry = analysis.get("industry", {})
     market = analysis.get("market", {})
-    recommendation = analysis.get("recommendation", {})
-    broad = market.get("broad_benchmark", {})
+    macro = analysis.get("macro", {})
+    sentiment = analysis.get("sentiment", {})
+    news = analysis.get("news", {})
+    derived = analysis.get("derived", {})
 
-    return {
+    broad = market.get("broad_benchmark", {})
+    macro_regime = macro.get("macro_regime", {}) if isinstance(macro, dict) else {}
+    cn_macro = macro.get("cn_macro", {}) if isinstance(macro, dict) else {}
+    style = macro.get("style_rotation", {}) if isinstance(macro, dict) else {}
+    composite = sentiment.get("composite_signal", {}) if isinstance(sentiment, dict) else {}
+    nb = sentiment.get("northbound", {}) if isinstance(sentiment, dict) else {}
+    breadth = sentiment.get("market_breadth", {}) if isinstance(sentiment, dict) else {}
+    news_items = news.get("items", []) if isinstance(news, dict) else []
+    freshness = news.get("freshness", {}) if isinstance(news, dict) else {}
+
+    context = {
         "symbol": analysis.get("symbol"),
         "name": analysis.get("name"),
         "theme": analysis.get("theme"),
         "board_name": analysis.get("board_name"),
-        "etf": {
-            "current_price": etf.get("current_price"),
-            "change_pct": etf.get("change_pct"),
-            "return_20d": etf.get("return_20d"),
-            "return_60d": etf.get("return_60d"),
-            "ma20": etf.get("ma20"),
-            "ma60": etf.get("ma60"),
-            "volume_ratio_20d": etf.get("volume_ratio_20d"),
-            "amount_ratio_20d": etf.get("amount_ratio_20d"),
-            "volatility_20d": etf.get("volatility_20d"),
-            "drawdown_from_52w_high_pct": etf.get("drawdown_from_52w_high_pct"),
-            "source": etf.get("source"),
-            "last_date": etf.get("last_date"),
-        },
-        "industry": {
-            "change_pct": industry.get("change_pct"),
-            "return_20d": industry.get("return_20d"),
-            "return_60d": industry.get("return_60d"),
-            "positive_ratio": industry.get("positive_ratio"),
-            "up_count": industry.get("up_count"),
-            "down_count": industry.get("down_count"),
-            "leader_name": industry.get("leader_name"),
-            "leader_change_pct": industry.get("leader_change_pct"),
-            "median_pe": industry.get("median_pe"),
-            "source": industry.get("source"),
-        },
-        "market": {
-            "regime": market.get("regime"),
-            "summary": market.get("summary"),
-            "broad_benchmark_return_20d": broad.get("return_20d"),
-            "broad_benchmark_return_60d": broad.get("return_60d"),
-            "growth_vs_value_20d": market.get("growth_vs_value", {}).get("spread_20d"),
-        },
-        "recommendation": recommendation,
-        "news": analysis.get("news", {}).get("items", []),
-    }
+        "分析时间": datetime.now().strftime("%Y-%m-%d %H:%M"),
 
-
-def build_single_prompt_context(analysis: dict) -> str:
-    return json.dumps(build_analysis_snapshot(analysis), ensure_ascii=False, indent=2)
-
-
-def build_universe_prompt_context(bundle: dict, top_n: int = 5) -> str:
-    ranked = bundle.get("ranked", [])[:top_n]
-    payload = {
-        "market": {
-            "regime": bundle.get("market", {}).get("regime"),
-            "summary": bundle.get("market", {}).get("summary"),
-            "growth_vs_value_20d": bundle.get("market", {}).get("growth_vs_value", {}).get("spread_20d"),
+        # ETF 行情 (L1-事实)
+        "ETF行情": {
+            "最新价": etf.get("current_price"),
+            "当日涨跌幅_pct": etf.get("change_pct"),
+            "近5日收益_pct": etf.get("return_5d"),
+            "近20日收益_pct": etf.get("return_20d"),
+            "近60日收益_pct": etf.get("return_60d"),
+            "年内收益_pct": etf.get("return_ytd"),
+            "20日均线": etf.get("ma20"),
+            "60日均线": etf.get("ma60"),
+            "120日均线": etf.get("ma120"),
+            "价格vs20日线_pct": etf.get("price_vs_ma20_pct"),
+            "价格vs60日线_pct": etf.get("price_vs_ma60_pct"),
+            "52周最高": etf.get("high_52w"),
+            "52周最低": etf.get("low_52w"),
+            "52周回撤_pct": etf.get("drawdown_from_52w_high_pct"),
+            "20日波动率_年化": etf.get("volatility_20d"),
+            "60日波动率_年化": etf.get("volatility_60d"),
+            "成交量比_20日": etf.get("volume_ratio_20d"),
+            "成交额比_20日": etf.get("amount_ratio_20d"),
+            "换手率": etf.get("turnover_rate"),
+            "来源": etf.get("source", ""),
+            "数据日期": etf.get("last_date", ""),
         },
-        "top_etfs": [
+
+        # 相对强弱 (L2-计算)
+        "相对强弱": {
+            "相对沪深300_20日_pct": derived.get("relative_strength_20d"),
+            "相对沪深300_60日_pct": derived.get("relative_strength_60d"),
+            "沪深300_20日收益_pct": broad.get("return_20d"),
+            "沪深300_60日收益_pct": broad.get("return_60d"),
+        },
+
+        # 行业板块 (L1-事实)
+        "行业板块": {
+            "板块名称": industry.get("board_name"),
+            "板块代码": industry.get("board_code"),
+            "板块类型": industry.get("board_type"),
+            "板块当日涨跌幅_pct": industry.get("change_pct"),
+            "板块近20日涨跌_pct": industry.get("return_20d"),
+            "板块近60日涨跌_pct": industry.get("return_60d"),
+            "上涨家数": industry.get("up_count"),
+            "下跌家数": industry.get("down_count"),
+            "上涨占比": industry.get("positive_ratio"),
+            "领涨股": industry.get("leader_name"),
+            "领涨股涨幅_pct": industry.get("leader_change_pct"),
+            "板块PE中位数": industry.get("median_pe"),
+            "来源": industry.get("source", ""),
+        },
+
+        # 市场环境 (L1/L2)
+        "市场环境": {
+            "市场状态": market.get("regime"),
+            "状态说明": market.get("summary"),
+            "成长vs价值_20日差值_pct": market.get("growth_vs_value", {}).get("spread_20d"),
+            "成长vs价值_60日差值_pct": market.get("growth_vs_value", {}).get("spread_60d"),
+        },
+
+        # 宏观背景 (L1-事实)
+        "宏观背景": {
+            "宏观环境": macro_regime.get("regime"),
+            "环境说明": macro_regime.get("regime_label"),
+            "宏观摘要": macro.get("macro_summary", ""),
+            "PMI_制造业": cn_macro.get("pmi", {}).get("manufacturing_pmi") if isinstance(cn_macro.get("pmi"), dict) else None,
+            "PMI_非制造业": cn_macro.get("pmi", {}).get("non_manufacturing_pmi") if isinstance(cn_macro.get("pmi"), dict) else None,
+            "PMI_月份": cn_macro.get("pmi", {}).get("month") if isinstance(cn_macro.get("pmi"), dict) else "",
+            "M2同比_pct": cn_macro.get("money_supply", {}).get("m2_yoy") if isinstance(cn_macro.get("money_supply"), dict) else None,
+            "M1同比_pct": cn_macro.get("money_supply", {}).get("m1_yoy") if isinstance(cn_macro.get("money_supply"), dict) else None,
+            "CP近期值": cn_macro.get("cpi", {}).get("value") if isinstance(cn_macro.get("cpi"), dict) else None,
+            "Shibor隔夜": cn_macro.get("shibor", {}).get("overnight") if isinstance(cn_macro.get("shibor"), dict) else None,
+            "宏观信号": macro_regime.get("signals", {}),
+            "风格偏好_20日": style.get("style_20d"),
+            "来源": macro.get("source", ""),
+        },
+
+        # 情绪与资金流 (L1-事实)
+        "情绪资金流": {
+            "综合情绪": composite.get("overall"),
+            "情绪详情": composite.get("details", []),
+            "北向资金_当日净流向_亿元": nb.get("net_flow_yi"),
+            "北向资金_5日累计_亿元": nb.get("net_flow_5d_yi"),
+            "北向资金_信号": nb.get("signal"),
+            "北向资金_日期": nb.get("date"),
+            "北向来源": nb.get("source"),
+            "全市场上涨占比": breadth.get("up_ratio"),
+            "全市场上涨家数": breadth.get("up_count"),
+            "全市场下跌家数": breadth.get("down_count"),
+            "市场宽度信号": breadth.get("signal"),
+            "融资余额_亿元": sentiment.get("margin", {}).get("margin_balance_yi") if isinstance(sentiment.get("margin"), dict) else None,
+            "融资信号": sentiment.get("margin", {}).get("signal") if isinstance(sentiment.get("margin"), dict) else None,
+        },
+
+        # 相关快讯 (仅近7日)
+        "相关快讯": [
             {
-                "rank": item.get("rank"),
-                "symbol": item.get("symbol"),
-                "name": item.get("name"),
-                "theme": item.get("theme"),
-                "rating": item.get("recommendation", {}).get("rating"),
-                "total_score": item.get("recommendation", {}).get("total_score"),
-                "action": item.get("recommendation", {}).get("action"),
-                "return_20d": item.get("etf", {}).get("return_20d"),
-                "vs_hs300_20d": item.get("recommendation", {}).get("relative_strength_20d"),
-                "industry_positive_ratio": item.get("industry", {}).get("positive_ratio"),
+                "时间": item.get("published"),
+                "标题": item.get("title"),
+                "来源": item.get("source"),
             }
-            for item in ranked
+            for item in news_items[:8]
         ],
-        "market_briefs": bundle.get("briefs", {}).get("items", []),
-    }
-    return json.dumps(payload, ensure_ascii=False, indent=2)
-
-
-# ═════════════════════════════════════════════
-# 增强版快照: 包含宏观、情绪、资金流维度
-# ═════════════════════════════════════════════
-
-def build_enhanced_snapshot(analysis: dict) -> str:
-    """
-    构建增强版单ETF分析快照 — 包含宏观、情绪、资金流维度。
-    用于 LLM prompt 注入。
-    """
-    base = build_analysis_snapshot(analysis)
-
-    # 新增: 宏观维度
-    macro = analysis.get("macro", {})
-    cn_macro = macro.get("cn_macro", {}) if isinstance(macro, dict) else {}
-    macro_regime = macro.get("macro_regime", {}) if isinstance(macro, dict) else {}
-    style = macro.get("style_rotation", {}) if isinstance(macro, dict) else {}
-
-    base["macro"] = {
-        "regime": macro_regime.get("regime", "数据不可用"),
-        "regime_label": macro_regime.get("regime_label", ""),
-        "signals": macro_regime.get("signals", {}),
-        "summary": macro.get("macro_summary", ""),
-        "pmi": cn_macro.get("pmi", {}),
-        "money_supply": cn_macro.get("money_supply", {}),
-        "shibor": cn_macro.get("shibor", {}),
-        "style_rotation": {
-            "growth_vs_value_20d": style.get("growth_vs_value_spread_20d"),
-            "style_20d": style.get("style_20d"),
-            "source": style.get("source", ""),
+        "快讯时效": {
+            "近7日可用": freshness.get("fresh_count", 0),
+            "过期丢弃": freshness.get("stale_dropped", 0),
+            "截止日期": freshness.get("cutoff_date"),
         },
     }
 
-    # 新增: 情绪与资金流维度
-    sentiment = analysis.get("sentiment", {})
-    if isinstance(sentiment, dict):
-        nb = sentiment.get("northbound", {})
-        breadth = sentiment.get("market_breadth", {})
-        margin = sentiment.get("margin", {})
-        composite = sentiment.get("composite_signal", {})
-
-        base["sentiment"] = {
-            "overall": composite.get("overall", "数据不可用"),
-            "details": composite.get("details", []),
-            "northbound": {
-                "date": nb.get("date", ""),
-                "net_flow_yi": nb.get("net_flow_yi"),
-                "net_flow_5d_yi": nb.get("net_flow_5d_yi"),
-                "signal": nb.get("signal", ""),
-                "source": nb.get("source", ""),
-            } if nb else {},
-            "market_breadth": {
-                "up_ratio": breadth.get("up_ratio"),
-                "up_count": breadth.get("up_count"),
-                "down_count": breadth.get("down_count"),
-                "signal": breadth.get("signal", ""),
-                "source": breadth.get("source", ""),
-            } if breadth else {},
-            "margin": {
-                "date": margin.get("date", ""),
-                "margin_balance_yi": margin.get("margin_balance_yi"),
-                "signal": margin.get("signal", ""),
-                "source": margin.get("source", ""),
-            } if margin else {},
-        }
-
-    # 新增: 新闻新鲜度信息
-    news = analysis.get("news", {})
-    if isinstance(news, dict):
-        freshness = news.get("freshness", {})
-        base["news_meta"] = {
-            "fresh_count": freshness.get("fresh_count", 0),
-            "stale_dropped": freshness.get("stale_dropped", 0),
-            "cutoff_date": freshness.get("cutoff_date", ""),
-            "policy": f"仅保留近{freshness.get('max_age_days', 7)}日新闻",
-        }
-
-    return json.dumps(base, ensure_ascii=False, indent=2, default=str)
+    return json.dumps(context, ensure_ascii=False, indent=2, default=str)
 
 
-def build_universe_snapshot(bundle: dict, top_n: int = 5) -> str:
+def build_universe_context(bundle: dict, top_n: int = 12) -> str:
     """
-    构建增强版轮动扫描快照 — 包含宏观和情绪维度。
+    构建全行业扫描的上下文，供 LLM 排名和分析使用。
+    包含所有 ETF 的关键指标 + 宏观/情绪背景。
     """
     market = bundle.get("market", {})
     macro = bundle.get("macro", {})
     sentiment = bundle.get("sentiment", {})
-    ranked = bundle.get("ranked", [])[:top_n]
+    analyses = bundle.get("analyses", [])
 
-    cn_macro = macro.get("cn_macro", {}) if isinstance(macro, dict) else {}
+    broad = market.get("broad_benchmark", {})
     macro_regime = macro.get("macro_regime", {}) if isinstance(macro, dict) else {}
+    cn_macro = macro.get("cn_macro", {}) if isinstance(macro, dict) else {}
     style = macro.get("style_rotation", {}) if isinstance(macro, dict) else {}
     composite = sentiment.get("composite_signal", {}) if isinstance(sentiment, dict) else {}
-
-    payload = {
-        "market": {
-            "regime": market.get("regime"),
-            "summary": market.get("summary"),
-            "growth_vs_value_20d": market.get("growth_vs_value", {}).get("spread_20d"),
-        },
-        "macro": {
-            "regime": macro_regime.get("regime", "数据不可用"),
-            "summary": macro.get("macro_summary", ""),
-            "pmi_manufacturing": cn_macro.get("pmi", {}).get("manufacturing_pmi") if isinstance(cn_macro.get("pmi"), dict) else None,
-            "m2_yoy": cn_macro.get("money_supply", {}).get("m2_yoy") if isinstance(cn_macro.get("money_supply"), dict) else None,
-            "style_20d": style.get("style_20d", ""),
-            "source": "AKShare 宏观经济数据",
-        },
-        "sentiment": {
-            "overall": composite.get("overall", "数据不可用"),
-            "details": composite.get("details", []),
-            "source": "综合（AKShare / 东方财富）",
-        },
-        "top_etfs": [
-            {
-                "rank": item.get("rank"),
-                "symbol": item.get("symbol"),
-                "name": item.get("name"),
-                "theme": item.get("theme"),
-                "rating": item.get("recommendation", {}).get("rating"),
-                "total_score": item.get("recommendation", {}).get("total_score"),
-                "action": item.get("recommendation", {}).get("action"),
-                "return_20d": item.get("etf", {}).get("return_20d"),
-                "vs_hs300_20d": item.get("recommendation", {}).get("relative_strength_20d"),
-                "industry_positive_ratio": item.get("industry", {}).get("positive_ratio"),
-                "macro_tailwind_score": item.get("recommendation", {}).get("macro_tailwind_score"),
-                "sentiment_score": item.get("recommendation", {}).get("sentiment_score"),
-            }
-            for item in ranked
-        ],
-        "market_briefs": bundle.get("briefs", {}).get("items", []),
-    }
-    return json.dumps(payload, ensure_ascii=False, indent=2, default=str)
-
-
-def facts_summary_for_prompt(analysis: dict) -> str:
-    """带来源标注的核心事实摘要，优先注入 LLM prompt"""
-    etf = analysis.get("etf", {})
-    industry = analysis.get("industry", {})
-    market = analysis.get("market", {})
-    rec = analysis.get("recommendation", {})
-    macro = analysis.get("macro", {})
-    sentiment = analysis.get("sentiment", {})
-    news = analysis.get("news", {})
-
-    macro_regime = macro.get("macro_regime", {}) if isinstance(macro, dict) else {}
-    cn_macro = macro.get("cn_macro", {}) if isinstance(macro, dict) else {}
-    composite = sentiment.get("composite_signal", {}) if isinstance(sentiment, dict) else {}
-    freshness = news.get("freshness", {}) if isinstance(news, dict) else {}
-
-    lines = [
-        "## 已验证核心事实（必须使用，并标注来源）",
-        f"- ETF当前价: {etf.get('current_price')} [{etf.get('source') or '来源缺失'}] (数据日期: {etf.get('last_date', '未知')})",
-        f"- 当日涨跌幅: {etf.get('change_pct')}% [{etf.get('source') or '来源缺失'}]",
-        f"- 近20日/60日收益: {etf.get('return_20d')}% / {etf.get('return_60d')}% [{etf.get('source') or '来源缺失'}]",
-        f"- 相对沪深300 (20日): {rec.get('relative_strength_20d')}pct [计算自 Eastmoney ETF + 沪深300ETF 行情]",
-        f"- 20日/60日均线: {etf.get('ma20')} / {etf.get('ma60')} [{etf.get('source') or '来源缺失'}]",
-        "",
-        f"## 行业板块事实",
-        f"- 行业板块当日涨跌幅: {industry.get('change_pct')}% [{industry.get('source') or '来源缺失'}]",
-        f"- 行业上涨家数占比: {industry.get('positive_ratio')} [{industry.get('source') or '来源缺失'}]",
-        f"- 行业领涨股: {industry.get('leader_name')} ({industry.get('leader_change_pct')}%) [{industry.get('source') or '来源缺失'}]",
-        "",
-        f"## 市场环境",
-        f"- 市场状态: {market.get('regime')} | {market.get('summary')}",
-        f"- 成长vs价值 (20日差值): {market.get('growth_vs_value', {}).get('spread_20d')}pct",
-        "",
-        f"## 宏观背景",
-        f"- 宏观环境: {macro_regime.get('regime', '数据不可用')}",
-        f"- 宏观摘要: {macro.get('macro_summary', '数据不可用')}",
-        f"- 风格偏好 (20日): {macro.get('style_rotation', {}).get('style_20d', '数据不可用')}",
-        "",
-        f"## 情绪与资金面",
-        f"- 整体情绪: {composite.get('overall', '数据不可用')}",
-        f"- 情绪细节: {', '.join(composite.get('details', [])) or '数据不可用'}",
-    ]
-
-    # 北向资金
     nb = sentiment.get("northbound", {}) if isinstance(sentiment, dict) else {}
-    if isinstance(nb, dict) and nb.get("net_flow_yi") is not None:
-        lines.append(f"- 北向资金净流向: {nb['net_flow_yi']}亿 [{nb.get('source', '')}] (日期: {nb.get('date', '')})")
-
-    # 市场宽度
     breadth = sentiment.get("market_breadth", {}) if isinstance(sentiment, dict) else {}
-    if isinstance(breadth, dict) and breadth.get("up_ratio") is not None:
-        lines.append(f"- 全市场上涨占比: {breadth['up_ratio']:.0%} [{breadth.get('source', '')}]")
 
-    lines.extend([
-        "",
-        f"## 新闻快讯时效",
-        f"- 近7日相关快讯: {freshness.get('fresh_count', 0)} 条",
-        f"- 过期丢弃: {freshness.get('stale_dropped', 0)} 条",
-        f"- 截止日期: {freshness.get('cutoff_date', '')}",
-        "",
-        "## 分析纪律（必须遵守）",
-        "1. 每个数值结论必须标注来源（如「Eastmoney ETF quote」「AKShare 宏观数据」）",
-        "2. 数据缺失时明确写「数据不可用」，禁止用「可能」「假设」填补关键数字",
-        "3. 推断必须基于已给数据，并写明推断逻辑；不得捏造政策、资金流、新闻等未提供的数据",
-        "4. 新闻标题只能引用近7日内快照中存在的条目；更早的一律不得引用",
-        "5. 若近7日无相关快讯，叙事部分须明确写「近一周无相关消息」",
-    ])
+    # 按近20日收益排序作为参考（非硬编码评分，仅用于排序呈现）
+    sorted_analyses = sorted(
+        analyses,
+        key=lambda a: a.get("etf", {}).get("return_20d") or -999,
+        reverse=True,
+    )
 
-    return "\n".join(lines)
+    etf_table = []
+    for idx, item in enumerate(sorted_analyses[:top_n], 1):
+        etf = item.get("etf", {})
+        ind = item.get("industry", {})
+        d = item.get("derived", {})
+        etf_table.append({
+            "序号": idx,
+            "代码": item.get("symbol"),
+            "名称": item.get("name"),
+            "主题": item.get("theme"),
+            "最新价": etf.get("current_price"),
+            "当日涨跌_pct": etf.get("change_pct"),
+            "近5日_pct": etf.get("return_5d"),
+            "近20日_pct": etf.get("return_20d"),
+            "近60日_pct": etf.get("return_60d"),
+            "年内_pct": etf.get("return_ytd"),
+            "相对沪深300_20日_pct": d.get("relative_strength_20d"),
+            "相对沪深300_60日_pct": d.get("relative_strength_60d"),
+            "价格vs20日线_pct": etf.get("price_vs_ma20_pct"),
+            "20日波动率": etf.get("volatility_20d"),
+            "量比_20日": etf.get("volume_ratio_20d"),
+            "52周回撤_pct": etf.get("drawdown_from_52w_high_pct"),
+            "板块名称": item.get("board_name"),
+            "板块涨跌_pct": ind.get("change_pct"),
+            "板块上涨占比": ind.get("positive_ratio"),
+            "板块领涨股": ind.get("leader_name"),
+            "领涨股涨幅_pct": ind.get("leader_change_pct"),
+        })
+
+    context = {
+        "分析时间": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "扫描ETF数量": len(analyses),
+
+        "宏观环境": {
+            "宏观定位": macro_regime.get("regime"),
+            "环境说明": macro_regime.get("regime_label"),
+            "宏观摘要": macro.get("macro_summary", ""),
+            "PMI制造业": cn_macro.get("pmi", {}).get("manufacturing_pmi") if isinstance(cn_macro.get("pmi"), dict) else None,
+            "M2同比_pct": cn_macro.get("money_supply", {}).get("m2_yoy") if isinstance(cn_macro.get("money_supply"), dict) else None,
+            "风格偏好": style.get("style_20d"),
+            "成长vs价值差值": market.get("growth_vs_value", {}).get("spread_20d"),
+        },
+
+        "市场环境": {
+            "市场状态": market.get("regime"),
+            "状态说明": market.get("summary"),
+            "沪深300_20日_pct": broad.get("return_20d"),
+            "沪深300_60日_pct": broad.get("return_60d"),
+        },
+
+        "情绪资金面": {
+            "综合情绪": composite.get("overall"),
+            "北向当日净流向_亿": nb.get("net_flow_yi"),
+            "北向5日累计_亿": nb.get("net_flow_5d_yi"),
+            "北向信号": nb.get("signal"),
+            "全市场上涨占比": breadth.get("up_ratio"),
+        },
+
+        "ETF指标总表": etf_table,
+    }
+
+    return json.dumps(context, ensure_ascii=False, indent=2, default=str)

@@ -1,5 +1,5 @@
 """
-行业 ETF 数据层统一入口 — 增强版（含宏观、情绪、资金流维度）
+行业 ETF 数据层统一入口 — 全 LLM 驱动版
 """
 from __future__ import annotations
 
@@ -7,12 +7,12 @@ import concurrent.futures
 
 
 def analyze_universe(verbose: bool = True) -> dict:
+    """扫描默认观察池，返回全部 ETF 的结构化分析数据"""
     from data.industry import fetch_board_panel
     from data.market import get_market_context
     from data.macro import get_macro_context
     from data.sentiment import get_sentiment_signals
     from data.universe import default_universe
-    from strategy.scoring import rank_analyses
 
     watchlist = default_universe()
     market = get_market_context()
@@ -21,7 +21,7 @@ def analyze_universe(verbose: bool = True) -> dict:
         "concept": fetch_board_panel("concept"),
     }
 
-    # 并行拉取宏观和情绪数据（与行业分析无关，可提前拉取）
+    # 并行拉取宏观和情绪
     macro = {}
     sentiment = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
@@ -47,27 +47,22 @@ def analyze_universe(verbose: bool = True) -> dict:
     max_workers = min(6, len(watchlist)) or 1
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(
-                _analyze_entry, entry, market, macro, sentiment, board_panels, True
-            ): entry
+            executor.submit(_analyze_entry, entry, market, macro, sentiment, board_panels, True): entry
             for entry in watchlist
         }
         for future in concurrent.futures.as_completed(futures):
             analyses.append(future.result())
 
-    ranked = rank_analyses(analyses)
-    briefs = {"items": []}
     return {
         "market": market,
         "macro": macro,
         "sentiment": sentiment,
         "analyses": analyses,
-        "ranked": ranked,
-        "briefs": briefs,
     }
 
 
 def analyze_symbol(symbol: str, verbose: bool = True) -> dict:
+    """单只 ETF 深度数据采集"""
     from data.industry import fetch_board_panel
     from data.market import get_market_context
     from data.macro import get_macro_context
@@ -83,7 +78,6 @@ def analyze_symbol(symbol: str, verbose: bool = True) -> dict:
         ),
     }
 
-    # 并行拉取宏观和情绪
     macro = {}
     sentiment = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
@@ -102,7 +96,6 @@ def analyze_symbol(symbol: str, verbose: bool = True) -> dict:
 
     if verbose:
         print(f"[INFO] 开始分析 {entry['name']} ({entry['symbol']})")
-        print(f"[INFO] 宏观环境: {macro.get('macro_regime', {}).get('regime', '未知')}")
 
     return _analyze_entry(entry, market, macro, sentiment, board_panels, True)
 
@@ -118,7 +111,6 @@ def _analyze_entry(
     from data.industry import get_industry_profile
     from data.news import get_market_briefs
     from data.price import get_etf_price_profile
-    from strategy.scoring import compute_recommendation
 
     etf = get_etf_price_profile(entry["symbol"], entry["name"])
     board_type = entry.get("board_type", "industry")
@@ -130,7 +122,6 @@ def _analyze_entry(
         board_type=board_type,
     )
 
-    # 新闻：带关键词过滤和新鲜度
     news_keywords = [entry.get("board_name", ""), entry.get("name", "")]
     news = (
         get_market_briefs(news_keywords)
@@ -138,7 +129,19 @@ def _analyze_entry(
         else {"items": [], "freshness": {}}
     )
 
-    payload = {
+    # 计算关键衍生指标（纯 L2，供 LLM 引用）
+    broad = market.get("broad_benchmark", {})
+    rs20 = _diff(etf.get("return_20d"), broad.get("return_20d"))
+    rs60 = _diff(etf.get("return_60d"), broad.get("return_60d"))
+    vol20 = etf.get("volatility_20d")
+    dd_52w = etf.get("drawdown_from_52w_high_pct")
+    price = etf.get("current_price")
+    ma20 = etf.get("ma20")
+
+    # 趋势结构判断
+    above_ma20 = price is not None and ma20 is not None and price > ma20
+
+    return {
         "symbol": entry["symbol"],
         "name": entry["name"],
         "theme": entry.get("theme", ""),
@@ -151,6 +154,18 @@ def _analyze_entry(
         "macro": macro,
         "sentiment": sentiment,
         "news": news,
+        # 衍生指标 (L2)
+        "derived": {
+            "relative_strength_20d": rs20,
+            "relative_strength_60d": rs60,
+            "volatility_20d": vol20,
+            "drawdown_52w_pct": dd_52w,
+            "above_ma20": above_ma20,
+        },
     }
-    payload["recommendation"] = compute_recommendation(payload)
-    return payload
+
+
+def _diff(a, b):
+    if a is None or b is None:
+        return None
+    return round(a - b, 1)
